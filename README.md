@@ -132,7 +132,3 @@ Download extracted frames as ZIP.
 ## License
 
 MIT
-
-## Author
-
-Created as a minimal frame extraction utility.
