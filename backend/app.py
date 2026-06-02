@@ -1,130 +1,159 @@
 import os
-import cv2
-import base64
-import zipfile
+import uuid
 import tempfile
+import subprocess
+import threading
+import zipfile
+import cv2
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from io import BytesIO
 
 app = Flask(__name__)
 CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 5000 * 1024 * 1024  # 5GB max
+jobs = {}
 
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({'error': 'Video file is too large! Please upload a smaller file.'}), 413
 
-def extract_frames(video_path, mode, value, color_mode='rgb'):
-    """
-    mode: 'nth' -> every Nth frame
-          'seconds' -> every X seconds
-          'minutes' -> every X minutes
-    color_mode: 'rgb' -> color frames
-                'grey' -> greyscale frames
-    """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError("Could not open video file")
+def build_ffmpeg_command(input_path, output_dir, mode, value, color_mode):
+    output_pattern = os.path.join(output_dir, "frame_%04d.jpg")
+    vf_filters = []
+    
+    cmd = ["ffmpeg", "-y", "-hwaccel", "auto", "-threads", "0"]
+    if mode in ['seconds', 'minutes']: cmd.extend(["-skip_frame", "nokey"])
+    
+    cmd.extend(["-i", input_path])
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps if fps > 0 else 0
+    if mode == 'seconds': vf_filters.append(f"fps=1/{value}")
+    elif mode == 'minutes': vf_filters.append(f"fps=1/{float(value) * 60}")
+    elif mode == 'nth':
+        vf_filters.append(f"select='not(mod(n,{int(value)}))'")
+        vf_filters.append("setpts=N/FRAME_RATE/TB") 
 
-    # Calculate interval based on mode
-    if mode == 'nth':
-        interval_frames = max(1, int(value))
-    else:
-        interval_seconds = float(value) * (60 if mode == 'minutes' else 1)
-        interval_frames = max(1, int(fps * interval_seconds))
+    if color_mode == 'grey': vf_filters.append("format=gray")
 
-    frames = []
-    frame_idx = 0
+    cmd.extend(["-vf", ",".join(vf_filters), "-q:v", "2", output_pattern])
+    return cmd
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % interval_frames == 0:
-            timestamp = frame_idx / fps if fps > 0 else 0
-            frames.append({
-                'frame_number': frame_idx,
-                'timestamp': round(timestamp, 3),
-                'image': encode_frame(frame, color_mode)
-            })
-        frame_idx += 1
-
-    cap.release()
-    return frames, round(duration, 2), total_frames, round(fps, 2)
-
-
-def encode_frame(frame, color_mode='rgb'):
-    if color_mode == 'grey':
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return base64.b64encode(buffer).decode('utf-8')
+def process_video_task(job_id, video_path, mode, value, color_mode, frame_dir):
+    """Background worker now receives the pre-made frame_dir."""
+    try:
+        cmd = build_ffmpeg_command(video_path, frame_dir, mode, value, color_mode)
+        # Run FFmpeg (This populates the frame_dir over time)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        
+        # Once FFmpeg finishes, zip the folder contents
+        zip_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        zip_path = zip_temp.name
+        zip_temp.close()
+        
+        filenames = sorted([f for f in os.listdir(frame_dir) if f.endswith('.jpg')])
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for filename in filenames:
+                zf.write(os.path.join(frame_dir, filename), arcname=filename)
+        
+        # Mark as fully done
+        jobs[job_id]['status'] = 'completed'
+        jobs[job_id]['file'] = zip_path
+            
+    except Exception as e:
+        jobs[job_id]['status'] = 'error'
+        jobs[job_id]['message'] = str(e)
+    finally:
+        if os.path.exists(video_path): os.remove(video_path)
 
 
 @app.route('/extract', methods=['POST'])
-def extract():
-    if 'video' not in request.files:
-        return jsonify({'error': 'No video file provided'}), 400
-
+def extract_async():
+    if 'video' not in request.files: return jsonify({'error': 'No video file provided'}), 400
     video = request.files['video']
-    mode = request.form.get('mode', 'nth')
+    mode = request.form.get('mode', 'seconds')
     value = request.form.get('value', '1')
     color_mode = request.form.get('color_mode', 'rgb')
 
-    try:
-        value = float(value)
-        if value <= 0:
-            raise ValueError()
-    except ValueError:
-        return jsonify({'error': 'Invalid interval value'}), 400
+    job_id = str(uuid.uuid4())
+    
+    # 1. Save video
+    tmp_vid = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(video.filename)[1])
+    video.save(tmp_vid.name)
+    tmp_vid.close()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(video.filename)[1]) as tmp:
-        video.save(tmp.name)
-        tmp_path = tmp.name
+    # 2. Create the output directory IMMEDIATELY so we can poll it
+    frame_dir = tempfile.mkdtemp()
+    
+    # 3. Calculate metadata instantly
+    cap = cv2.VideoCapture(tmp_vid.name)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cap.release()
 
-    try:
-        frames, duration, total_frames, fps = extract_frames(tmp_path, mode, value, color_mode)
-    except Exception as e:
-        os.unlink(tmp_path)
-        return jsonify({'error': str(e)}), 500
+    interval_sec, interval_frames = 0, 1
+    if mode == 'seconds':
+        interval_sec = float(value)
+        interval_frames = interval_sec * fps
+    elif mode == 'minutes':
+        interval_sec = float(value) * 60
+        interval_frames = interval_sec * fps
+    elif mode == 'nth':
+        interval_frames = int(value)
+        interval_sec = interval_frames / fps
 
-    os.unlink(tmp_path)
+    # Register job with all tracking info
+    jobs[job_id] = {
+        'status': 'processing',
+        'frame_dir': frame_dir,
+        'fps': fps,
+        'interval_sec': interval_sec,
+        'interval_frames': interval_frames
+    }
 
-    return jsonify({
-        'frames': frames,
-        'meta': {
-            'duration': duration,
-            'total_frames': total_frames,
-            'fps': fps,
-            'extracted_count': len(frames)
-        }
-    })
+    # Start thread
+    threading.Thread(target=process_video_task, args=(job_id, tmp_vid.name, mode, value, color_mode, frame_dir)).start()
+
+    return jsonify({'job_id': job_id, 'status_url': f'/status/{job_id}'}), 202
 
 
-@app.route('/download-zip', methods=['POST'])
-def download_zip():
-    data = request.get_json()
-    frames = data.get('frames', [])
+@app.route('/status/<job_id>', methods=['GET'])
+def check_status(job_id):
+    job = jobs.get(job_id)
+    if not job: return jsonify({'error': 'Job not found'}), 404
 
-    if not frames:
-        return jsonify({'error': 'No frames provided'}), 400
+    # DYNAMIC STREAMING LOGIC: Always check the folder for new files
+    current_frames = []
+    if os.path.exists(job['frame_dir']):
+        filenames = sorted([f for f in os.listdir(job['frame_dir']) if f.endswith('.jpg')])
+        for i, filename in enumerate(filenames):
+            current_frames.append({
+                'frame_number': int(i * job['interval_frames']),
+                'timestamp': round(i * job['interval_sec'], 3),
+                'filename': filename
+            })
 
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for i, frame in enumerate(frames):
-            img_data = base64.b64decode(frame['image'])
-            filename = f"frame_{frame['frame_number']:06d}_t{frame['timestamp']}s.jpg"
-            zf.writestr(filename, img_data)
+    response = {
+        'status': job['status'],
+        'frames': current_frames # Send whatever is extracted so far
+    }
+    
+    if job['status'] == 'completed':
+        response['download_url'] = f'/download/{job_id}'
+    elif job['status'] == 'error':
+        response['message'] = job.get('message', 'Unknown error')
 
-    zip_buffer.seek(0)
-    return send_file(
-        zip_buffer,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name='frames.zip'
-    )
+    return jsonify(response)
 
+
+@app.route('/preview/<job_id>/<filename>', methods=['GET'])
+def serve_preview(job_id, filename):
+    job = jobs.get(job_id)
+    if not job or 'frame_dir' not in job: return "Image not found", 404
+    return send_file(os.path.join(job['frame_dir'], filename), mimetype='image/jpeg')
+
+@app.route('/download/<job_id>', methods=['GET'])
+def download_result(job_id):
+    job = jobs.get(job_id)
+    if not job or job['status'] != 'completed': return jsonify({'error': 'File not ready'}), 404
+    return send_file(job['file'], mimetype='application/zip', as_attachment=True, download_name='frames.zip')
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
