@@ -5,7 +5,15 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cleanup() {
     echo ""
     echo "Shutting down servers..."
-    kill 0
+    
+    # Kill backend assuming it is running on the default ports  
+    lsof -t -i:5000 | xargs kill 2>/dev/null
+    
+    # Kill frontend assuming it is running on the default ports 
+    lsof -t -i:5173 | xargs kill 2>/dev/null
+    
+    echo "Servers stopped. Goodbye!"
+    exit 0
 }
 
 trap cleanup SIGINT SIGTERM EXIT
