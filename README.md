@@ -1,17 +1,16 @@
 # TriFrames Triage
 
-A minimal, dark-themed video frame extraction tool. No fluff. Extract frames by interval (every Nth frame, time-based, or minute-based), choose RGB or greyscale output, and download all frames as a ZIP.
+A video frame extraction tool. No fluff. Extract frames by interval (every Nth frame, time-based, or minute-based), choose RGB or greyscale output, and download all frames as a ZIP.
 
-Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc.) without freezing or crashing the browser, utilizing hardware acceleration for blazing-fast extractions.
+Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc.), utilizing hardware acceleration for fast extractions.
 
 ## Features
 
 - **Asynchronous Processing**: Non-blocking background workers prevent timeouts on long videos.
 - **Real-Time Streaming UI**: Watch frames populate the grid instantly as they are extracted.
-- **Hardware Acceleration**: GPU-accelerated FFmpeg decoding with keyframe-skipping for up to 50x faster processing on large files.
+- **Hardware Acceleration**: GPU-accelerated FFmpeg decoding with keyframe-skipping for large files.
 - **Multiple extraction modes**: Every Nth frame, every X seconds, or every X minutes
 - **Color modes**: RGB color or greyscale
-- **Dark theme**: Clean, minimal interface
 - **Batch download**: Export all frames directly to a server-side ZIP archive.
 - **Lightbox preview**: Click any frame for full-size view
 
@@ -26,7 +25,7 @@ Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc
 ### One-command startup (Windows)
 
 ```bash
-./start.ps1
+./start.bash
 
 ```
 
@@ -72,7 +71,7 @@ triageTool/
 │   └── package.json        # NPM dependencies
 ├── .gitignore
 ├── README.md
-└── start.ps1               # Startup script
+└── start.bash              # Startup script
 
 ```
 
@@ -141,15 +140,8 @@ Downloads the final, fully-compiled ZIP file containing all extracted frames.
 
 **Dependencies:**
 
-* Backend: Flask, Flask-Cors, opencv-python (for metadata calculation)
+* Backend: Flask, Flask-Cors, opencv-python (for metadata calculation), FFMPEG (for video decoding)
 * Frontend: React, Vite
-
-**Code style:**
-
-* Minimal, clean architecture
-* Dark theme with neon accent (#e8ff47)
-* Responsive CSS Grid layout
-* Lazy-loaded images for memory safety
 
 ## License
 
