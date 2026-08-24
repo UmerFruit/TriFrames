@@ -1,6 +1,6 @@
 # TriFrames Triage
 
-A video frame extraction tool. No fluff. Extract frames by interval (every Nth frame, time-based, or minute-based), choose RGB or greyscale output, and download all frames as a ZIP.
+A video frame extraction tool. Extract frames by interval (every Nth frame, time-based, or minute-based), choose RGB or greyscale output, and download all frames as a ZIP.
 
 Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc.), utilizing hardware acceleration for fast extractions.
 
@@ -16,13 +16,13 @@ Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc
 
 ## Requirements
 
-- **FFmpeg**: Must be installed and added to your system PATH (`sudo apt install ffmpeg`, `brew install ffmpeg`, or downloaded for Windows).
+- **FFmpeg**: Must be installed and added to your system PATH (`sudo apt install ffmpeg`, `brew install ffmpeg`, or download it for Windows).
 - Python 3.8+ (backend)
 - Node.js 16+ (frontend)
 
 ## Quick Start
 
-### One-command startup (Windows)
+### One-command startup
 
 ```bash
 ./start.bash
@@ -30,7 +30,7 @@ Built with an asynchronous FFmpeg backend to handle massive files (MKV, MP4, etc
 ```
 
 This launches both backend and frontend. Open http://localhost:5173 in your browser.
-
+Alternatively, install concurrently module via npm i concurrently, and launch both with one command. 
 ### Manual startup
 
 **Backend:**
@@ -40,7 +40,6 @@ cd backend
 pip install -r requirements.txt
 python app.py
 # Runs on http://localhost:5000
-
 ```
 
 **Frontend (new terminal):**
@@ -50,7 +49,6 @@ cd frontend
 npm install
 npm run dev
 # Runs on http://localhost:5173
-
 ```
 
 ## Project Structure
@@ -74,55 +72,6 @@ triageTool/
 └── start.bash              # Startup script
 
 ```
-
-## API Endpoints
-
-### POST /extract
-
-Accepts the video file and starts the background FFmpeg task.
-
-**Parameters (multipart/form-data):**
-
-* `video`: Video file
-* `mode`: 'nth' | 'seconds' | 'minutes'
-* `value`: Interval value (number)
-* `color_mode`: 'rgb' | 'grey'
-
-**Response:**
-
-```json
-{
-  "job_id": "uuid-string",
-  "status_url": "/status/uuid-string"
-}
-
-```
-
-### GET /status/<job_id>
-
-Poll this endpoint to stream the extraction progress in real-time.
-
-**Response (while processing):**
-
-```json
-{
-  "status": "processing",
-  "frames": [
-    { "frame_number": 0, "timestamp": 0.0, "filename": "frame_0001.jpg" }
-  ]
-}
-
-```
-
-**Response (when finished):** Returns `status: "completed"` and injects a `download_url` into the JSON payload.
-
-### GET /preview/<job_id>/
-
-Serves the raw JPEG file directly from the temporary server extraction directory. Used by the React frontend to display grid images without consuming excessive RAM.
-
-### GET /download/<job_id>
-
-Downloads the final, fully-compiled ZIP file containing all extracted frames.
 
 ## Configuration
 
